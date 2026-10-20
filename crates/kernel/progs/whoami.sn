@@ -1,0 +1,73 @@
+// whoami — print the effective username (lookup by uid in /etc/passwd).
+void main() {
+    sword ac = argc();
+    if (ac > 1) {
+        u8 flag[8];
+        sword flen = arg(1, &flag[0], 7);
+        flag[flen] = 0;
+        if (flag[0] == '-' && flag[1] == '-' && flag[2] == 'h' && flag[3] == 'e' && flag[4] == 'l' && flag[5] == 'p') {
+            puts("usage: whoami\nprint the effective username\n");
+            return;
+        }
+    }
+    sword uid = syscall(24); // getuid
+    u8 pwpath[16];
+    pwpath[0] = '/'; pwpath[1] = 'e'; pwpath[2] = 't'; pwpath[3] = 'c';
+    pwpath[4] = '/'; pwpath[5] = 'p'; pwpath[6] = 'a'; pwpath[7] = 's';
+    pwpath[8] = 's'; pwpath[9] = 'w'; pwpath[10] = 'd'; pwpath[11] = 0;
+    sword fd = syscall(8, &pwpath[0], 0); // open(O_RDONLY)
+    if (fd < 0) {
+        write(2, "whoami: no /etc/passwd\n", 23);
+        exit(1);
+    }
+    u8 line[128];
+    word llen = 0;
+    u8 buf[512];
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0) {
+        word i = 0;
+        while (i < cast<word>(n)) {
+            u8 c = buf[i];
+            if (c == '\n') {
+                // Parse fields: name:hash:uid:...
+                word f = 0;
+                word start = 0;
+                word uidstart = 0;
+                word k = 0;
+                word commas = 0;
+                // Find name (field 0) and uid (field 2).
+                word nameend = 0;
+                while (k < llen) {
+                    if (line[k] == ':') {
+                        commas = commas + 1;
+                        if (commas == 1) { nameend = k; }
+                        if (commas == 2) { uidstart = k + 1; }
+                    }
+                    k = k + 1;
+                }
+                // Extract uid field.
+                word uend = uidstart;
+                while (uend < llen && line[uend] != ':') { uend = uend + 1; }
+                sword found = 0;
+                word u = 0;
+                while (uidstart + u < uend) {
+                    found = found * 10 + (cast<sword>(line[uidstart + u]) - 48);
+                    u = u + 1;
+                }
+                if (found == uid && nameend > 0) {
+                    write(1, &line[0], cast<sword>(nameend));
+                    write(1, "\n", 1);
+                    close(fd);
+                    return;
+                }
+                llen = 0;
+            } else if (llen < 127) {
+                line[llen] = c;
+                llen = llen + 1;
+            }
+            i = i + 1;
+        }
+        n = read(fd, &buf[0], 512);
+    }
+    close(fd);
+}

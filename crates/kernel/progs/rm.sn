@@ -1,0 +1,97 @@
+// rm — remove files, or with -r remove directories recursively.
+
+// Recursively remove a directory's contents, then the directory itself.
+void rm_dir(*u8 path, word plen) {
+    sword fd = syscall(8, path, 0); // open(O_RDONLY)
+    if (fd < 0) { return; }
+    u8 buf[1024];
+    sword n = read(fd, &buf[0], 1024);
+    close(fd);
+    word base = cast<word>(&buf[0]);
+    word count = cast<word>(n) / 16;
+    word e = 0;
+    while (e < count) {
+        word off = e * 16;
+        u16 inum = load<u16>(base + off);
+        if (inum != 0) {
+            u8 namebuf[16];
+            word j = 0;
+            while (j < 14) {
+                u8 c = buf[off + 2 + j];
+                if (c == 0) { break; }
+                namebuf[j] = c;
+                j = j + 1;
+            }
+            namebuf[j] = 0;
+            bool isdot = (j == 1 && namebuf[0] == '.') || (j == 2 && namebuf[0] == '.' && namebuf[1] == '.');
+            if (!isdot) {
+                u8 cpath[256];
+                word pi = 0;
+                word d = 0;
+                while (d < plen) { cpath[pi] = load<u8>(cast<word>(path) + d); pi = pi + 1; d = d + 1; }
+                cpath[pi] = '/';
+                pi = pi + 1;
+                word ni = 0;
+                while (namebuf[ni] != 0) { cpath[pi] = namebuf[ni]; pi = pi + 1; ni = ni + 1; }
+                cpath[pi] = 0;
+                // If it is a directory, recurse; otherwise unlink.
+                u8 st[8];
+                bool isdir = false;
+                if (syscall(14, &cpath[0], &st[0]) == 0) {
+                    u32 kind = load<u32>(cast<word>(&st[0]));
+                    if (kind == 2) { isdir = true; }
+                }
+                if (isdir) {
+                    rm_dir(&cpath[0], pi);
+                } else {
+                    syscall(12, &cpath[0]); // unlink
+                }
+            }
+        }
+        e = e + 1;
+    }
+    syscall(12, path); // unlink the (now empty) directory
+}
+
+void main() {
+    sword ac = argc();
+    if (ac < 2) {
+        puts("usage: rm [-r] <path>...\n");
+        exit(1);
+    }
+    // Leading -r flag.
+    bool recursive = false;
+    sword start = 1;
+    u8 flag[8];
+    sword flen = arg(1, &flag[0], 7);
+    flag[flen] = 0;
+    if (flen == 2 && flag[0] == '-' && flag[1] == 'r') {
+        recursive = true;
+        start = 2;
+    }
+    if (start >= ac) {
+        puts("usage: rm [-r] <path>...\n");
+        exit(1);
+    }
+    for (sword i = start; i < ac; i = i + 1) {
+        u8 path[128];
+        sword len = arg(i, &path[0], 127);
+        path[len] = 0;
+        // Check if the target is a directory.
+        u8 st[8];
+        bool isdir = false;
+        if (syscall(14, &path[0], &st[0]) == 0) {
+            u32 kind = load<u32>(cast<word>(&st[0]));
+            if (kind == 2) { isdir = true; }
+        }
+        if (isdir && recursive) {
+            rm_dir(&path[0], cast<word>(len));
+        } else {
+            sword r = syscall(12, &path[0]); // unlink
+            if (r < 0) {
+                write(2, "rm: cannot remove\n", 18);
+                exit(1);
+            }
+        }
+    }
+}

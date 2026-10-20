@@ -1,0 +1,63 @@
+// tail — print the last N lines of a file (default 10).
+// Reads the whole file into a ring of the last N lines.
+void main() {
+    if (argc() < 2) {
+        puts("usage: tail [-n N] <file>\n");
+        exit(1);
+    }
+    sword max = 10;
+    u8 path[128];
+    sword argi = 1;
+    u8 flag[8];
+    sword flen = arg(argi, &flag[0], 7);
+    flag[flen] = 0;
+    if (flen == 2 && flag[0] == '-' && flag[1] == 'n') {
+        argi = argi + 1;
+        u8 num[16];
+        sword nlen = arg(argi, &num[0], 15);
+        num[nlen] = 0;
+        max = 0;
+        word k = 0;
+        while (k < cast<word>(nlen)) {
+            max = max * 10 + (cast<sword>(num[k]) - 48);
+            k = k + 1;
+        }
+        argi = argi + 1;
+    }
+    if (argi >= argc()) {
+        puts("usage: tail [-n N] <file>\n");
+        exit(1);
+    }
+    sword len = arg(argi, &path[0], 127);
+    path[len] = 0;
+
+    sword fd = syscall(8, &path[0], 0); // open(O_RDONLY)
+    if (fd < 0) {
+        write(2, "tail: cannot open file\n", 23);
+        exit(1);
+    }
+    // Buffer the whole file (bounded), then find the start of the last max lines.
+    u8 data[8192];
+    word total = 0;
+    u8 buf[512];
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0 && total < 8192) {
+        word i = 0;
+        while (i < cast<word>(n) && total < 8192) {
+            data[total] = buf[i];
+            total = total + 1;
+            i = i + 1;
+        }
+        n = read(fd, &buf[0], 512);
+    }
+    close(fd);
+    // Walk back from the end counting newlines to find the start line.
+    sword lines = 0;
+    word p = total;
+    while (p > 0 && lines < max) {
+        p = p - 1;
+        if (data[p] == '\n') { lines = lines + 1; }
+    }
+    if (lines == max) { p = p + 1; }
+    write(1, &data[p], cast<sword>(total - p));
+}

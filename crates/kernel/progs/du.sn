@@ -1,0 +1,169 @@
+// du — estimate file disk usage. Human-readable by default.
+//   du [flags] [path ...]
+//   -s        summarize (print only a total per argument)
+//   -a        include files, not just directories
+//   -h        human-readable sizes (the default; accepted for compatibility)
+//   -d N      limit recursion to N levels below each argument (0 = argument only)
+
+bool g_summarize = false;
+bool g_all = false;
+word g_maxdepth = 1000;
+
+void put_num(u32 n) {
+    u8 num[16];
+    word i = 0;
+    u32 v = n;
+    if (v == 0) { num[0] = '0'; i = 1; }
+    while (v > 0) { num[i] = cast<u8>(48 + v % 10); v = v / 10; i = i + 1; }
+    word j = i;
+    while (j > 0) { j = j - 1; write(1, &num[j], 1); }
+}
+
+// Print a byte count in human form: 512B, 1.5K, 2.0M.
+void put_size(u32 bytes) {
+    if (bytes < 1024) {
+        put_num(bytes);
+        write(1, "B", 1);
+    } else if (bytes < 1048576) {
+        u32 whole = bytes / 1024;
+        u32 frac = (bytes % 1024) * 10 / 1024;
+        put_num(whole);
+        write(1, ".", 1);
+        u8 d[2]; d[0] = cast<u8>(48 + frac); d[1] = 0;
+        write(1, &d[0], 1);
+        write(1, "K", 1);
+    } else {
+        u32 whole = bytes / 1048576;
+        u32 frac = (bytes % 1048576) * 10 / 1048576;
+        put_num(whole);
+        write(1, ".", 1);
+        u8 d[2]; d[0] = cast<u8>(48 + frac); d[1] = 0;
+        write(1, &d[0], 1);
+        write(1, "M", 1);
+    }
+}
+
+void print_entry(u32 blocks, *u8 path, word plen) {
+    put_size(blocks * 512);
+    write(1, "\t", 1);
+    write(1, path, cast<sword>(plen));
+    write(1, "\n", 1);
+}
+
+// Return total blocks for path, printing entries as recursion unwinds.
+u32 du_path(*u8 path, word plen, word depth) {
+    u8 st[8];
+    if (syscall(14, path, &st[0]) < 0) { return 0; }
+    u32 kind = load<u32>(cast<word>(&st[0]));
+    bool isdir = (kind == 2);
+    u32 blocks = 0;
+    sword nb = syscall(33, path); // nblocks
+    if (nb > 0) { blocks = cast<u32>(nb); }
+    if (isdir && depth < g_maxdepth) {
+        sword fd = syscall(8, path, 0);
+        if (fd >= 0) {
+            u8 buf[1024];
+            sword n = read(fd, &buf[0], 1024);
+            close(fd);
+            word base = cast<word>(&buf[0]);
+            word count = cast<word>(n) / 16;
+            word e = 0;
+            while (e < count) {
+                word off = e * 16;
+                u16 inum = load<u16>(base + off);
+                if (inum != 0) {
+                    u8 namebuf[16];
+                    word j = 0;
+                    while (j < 14) {
+                        u8 c = buf[off + 2 + j];
+                        if (c == 0) { break; }
+                        namebuf[j] = c;
+                        j = j + 1;
+                    }
+                    namebuf[j] = 0;
+                    bool isdot = (j == 1 && namebuf[0] == '.') || (j == 2 && namebuf[0] == '.' && namebuf[1] == '.');
+                    if (!isdot) {
+                        u8 cpath[256];
+                        word pi = 0;
+                        word d = 0;
+                        while (d < plen) { cpath[pi] = load<u8>(cast<word>(path) + d); pi = pi + 1; d = d + 1; }
+                        cpath[pi] = '/';
+                        pi = pi + 1;
+                        word ni = 0;
+                        while (namebuf[ni] != 0) { cpath[pi] = namebuf[ni]; pi = pi + 1; ni = ni + 1; }
+                        cpath[pi] = 0;
+                        blocks = blocks + du_path(&cpath[0], pi, depth + 1);
+                    }
+                }
+                e = e + 1;
+            }
+        }
+    }
+    if (!g_summarize && (isdir || g_all)) {
+        print_entry(blocks, path, plen);
+    }
+    return blocks;
+}
+
+void main() {
+    sword ac = argc();
+    // Record the argument index of each path so flags can come first.
+    word path_idx[8];
+    sword npath = 0;
+    sword i = 1;
+    while (i < ac) {
+        u8 a[8];
+        sword len = arg(i, &a[0], 7);
+        a[len] = 0;
+        if (a[0] == '-' && len > 1) {
+            word c = 1;
+            while (c < cast<word>(len)) {
+                u8 f = a[c];
+                if (f == 's') { g_summarize = true; }
+                else if (f == 'a') { g_all = true; }
+                else if (f == 'h') { /* human-readable is the default */ }
+                else if (f == 'd') {
+                    if (c + 1 < cast<word>(len)) {
+                        // -dN form.
+                        word dv = 0;
+                        word k = c + 1;
+                        while (k < cast<word>(len)) { dv = dv * 10 + (cast<word>(a[k]) - 48); k = k + 1; }
+                        g_maxdepth = dv;
+                        c = cast<word>(len);
+                    } else if (i + 1 < ac) {
+                        // -d N form: consume the next argument.
+                        u8 nb[16];
+                        sword nlen = arg(i + 1, &nb[0], 15);
+                        nb[nlen] = 0;
+                        word dv = 0;
+                        word k = 0;
+                        while (k < cast<word>(nlen)) { dv = dv * 10 + (cast<word>(nb[k]) - 48); k = k + 1; }
+                        g_maxdepth = dv;
+                        i = i + 1;
+                        c = cast<word>(len);
+                    }
+                }
+                c = c + 1;
+            }
+        } else {
+            if (npath < 8) { path_idx[npath] = cast<word>(i); npath = npath + 1; }
+        }
+        i = i + 1;
+    }
+
+    if (npath == 0) {
+        u8 dot[2]; dot[0] = '.'; dot[1] = 0;
+        u32 total = du_path(&dot[0], 1, 0);
+        if (g_summarize) { print_entry(total, &dot[0], 1); }
+    } else {
+        sword p = 0;
+        while (p < npath) {
+            u8 path[128];
+            sword len = arg(cast<sword>(path_idx[p]), &path[0], 127);
+            path[len] = 0;
+            u32 total = du_path(&path[0], cast<word>(len), 0);
+            if (g_summarize) { print_entry(total, &path[0], cast<word>(len)); }
+            p = p + 1;
+        }
+    }
+}

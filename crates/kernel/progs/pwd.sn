@@ -1,0 +1,11 @@
+// pwd — print the current working directory.
+void main() {
+    u8 buf[128];
+    sword n = syscall(23, &buf[0], 127); // getcwd
+    if (n < 0) {
+        write(2, "pwd: cannot get cwd\n", 20);
+        exit(1);
+    }
+    write(1, &buf[0], n);
+    write(1, "\n", 1);
+}

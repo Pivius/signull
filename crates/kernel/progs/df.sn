@@ -1,0 +1,134 @@
+// df — report filesystem disk space usage.
+//   -h  human-readable sizes
+//   -k  1024-byte blocks (also the default unit)
+//   -T  print the filesystem type
+//   -i  show inode information instead of blocks
+//   --help
+//   PATH  accepted and ignored (there is a single filesystem)
+// StatFs (20 bytes): total_blocks free_blocks total_inodes free_inodes block_size.
+
+void put_num(u32 n) {
+    u8 num[16];
+    word i = 0;
+    u32 v = n;
+    if (v == 0) { num[0] = '0'; i = 1; }
+    while (v > 0) { num[i] = cast<u8>(48 + v % 10); v = v / 10; i = i + 1; }
+    word j = i;
+    while (j > 0) { j = j - 1; write(1, &num[j], 1); }
+}
+
+void put_size(u32 bytes) {
+    if (bytes < 1024) {
+        put_num(bytes);
+        write(1, "B", 1);
+    } else if (bytes < 1048576) {
+        u32 whole = bytes / 1024;
+        u32 frac = (bytes % 1024) * 10 / 1024;
+        put_num(whole);
+        write(1, ".", 1);
+        u8 d[2]; d[0] = cast<u8>(48 + frac); d[1] = 0;
+        write(1, &d[0], 1);
+        write(1, "K", 1);
+    } else {
+        u32 whole = bytes / 1048576;
+        u32 frac = (bytes % 1048576) * 10 / 1048576;
+        put_num(whole);
+        write(1, ".", 1);
+        u8 d[2]; d[0] = cast<u8>(48 + frac); d[1] = 0;
+        write(1, &d[0], 1);
+        write(1, "M", 1);
+    }
+}
+
+void put_percent(u32 used, u32 total) {
+    if (total == 0) { write(1, "  0%", 4); return; }
+    u32 pct = used * 100 / total;
+    if (pct < 10) { write(1, " ", 1); }
+    put_num(pct);
+    write(1, "%", 1);
+}
+
+void main() {
+    bool human = false;
+    bool ftype = false;
+    bool inodes = false;
+    sword ac = argc();
+    sword i = 1;
+    while (i < ac) {
+        u8 a[16];
+        sword len = arg(i, &a[0], 15);
+        a[len] = 0;
+        if (a[0] == '-') {
+            if (a[1] == '-') {
+                if (len == 6 && a[2] == 'h' && a[3] == 'e' && a[4] == 'l' && a[5] == 'p') {
+                    puts("usage: df [-h|-k|-T|-i] [path]\n");
+                    puts("  -h  human-readable sizes\n");
+                    puts("  -k  1024-byte blocks\n");
+                    puts("  -T  print filesystem type\n");
+                    puts("  -i  show inode information\n");
+                    return;
+                }
+            } else {
+                word c = 1;
+                while (c < cast<word>(len)) {
+                    u8 f = a[c];
+                    if (f == 'h') { human = true; }
+                    else if (f == 'k') { /* 1K is the default unit */ }
+                    else if (f == 'T') { ftype = true; }
+                    else if (f == 'i') { inodes = true; }
+                    c = c + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    u8 buf[20];
+    if (syscall(28, &buf[0]) < 0) { // statfs
+        write(2, "df: statfs failed\n", 18);
+        exit(1);
+    }
+    word base = cast<word>(&buf[0]);
+    u32 total_b = load<u32>(base);
+    u32 free_b = load<u32>(base + 4);
+    u32 total_i = load<u32>(base + 8);
+    u32 free_i = load<u32>(base + 12);
+    u32 bsize = load<u32>(base + 16);
+    u32 used_b = 0; if (total_b >= free_b) { used_b = total_b - free_b; }
+    u32 used_i = 0; if (total_i >= free_i) { used_i = total_i - free_i; }
+    u32 total_bytes = total_b * bsize;
+    u32 used_bytes = used_b * bsize;
+    u32 free_bytes = free_b * bsize;
+
+    // Header.
+    write(1, "Filesystem", 10);
+    if (ftype) { write(1, " Type", 5); }
+    if (inodes) {
+        write(1, "  Inodes  Used  Free", 20);
+    } else if (human) {
+        write(1, "     Size   Used   Free", 22);
+    } else {
+        write(1, " 1K-blocks   Used   Free", 24);
+    }
+    write(1, "  Use% Mounted on\n", 18);
+
+    // Row.
+    write(1, "/dev/sda", 8);
+    if (ftype) { write(1, " sin1", 5); }
+    if (inodes) {
+        write(1, "  ", 2); put_num(total_i);
+        write(1, "  ", 2); put_num(used_i);
+        write(1, "  ", 2); put_num(free_i);
+    } else if (human) {
+        write(1, "  ", 2); put_size(total_bytes);
+        write(1, "  ", 2); put_size(used_bytes);
+        write(1, "  ", 2); put_size(free_bytes);
+    } else {
+        write(1, "  ", 2); put_num(total_bytes / 1024);
+        write(1, "  ", 2); put_num(used_bytes / 1024);
+        write(1, "  ", 2); put_num(free_bytes / 1024);
+    }
+    write(1, "  ", 2);
+    if (inodes) { put_percent(used_i, total_i); } else { put_percent(used_b, total_b); }
+    write(1, " /\n", 3);
+}

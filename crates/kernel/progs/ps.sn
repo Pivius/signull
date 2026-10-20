@@ -1,0 +1,280 @@
+// ps — list running processes.
+//   -e       every process (the default)
+//   -f       full format: UID PID PPID CMD
+//   -u USER  only processes owned by USER
+//   -p PID   only the process with this PID
+//   -o LIST  output columns: comma list of pid,ppid,uid,state,comm,args
+// ProcEnt (32 bytes): pid(i32) ppid(i32) uid(u32) state(u8) name[16] pad.
+
+u8 g_ps[1024];
+word g_count;
+word g_base;
+
+bool g_full;
+bool g_ofmt;
+bool g_filt_user;
+u32 g_filt_uid;
+bool g_filt_pid;
+i32 g_filt_pidv;
+
+u8 g_user[32];
+word g_userlen;
+
+u8 g_fmt[64];
+word g_fmtlen;
+word g_codes[16];
+word g_ncodes;
+
+// Globals for the username -> uid lookup.
+u32 g_founduid;
+bool g_found;
+
+void put_num(u32 n) {
+    u8 num[16];
+    word i = 0;
+    u32 v = n;
+    if (v == 0) { num[0] = '0'; i = 1; }
+    while (v > 0) { num[i] = cast<u8>(48 + v % 10); v = v / 10; i = i + 1; }
+    word j = i;
+    while (j > 0) { j = j - 1; write(1, &num[j], 1); }
+}
+
+// Resolve g_user to a uid by scanning /etc/passwd.
+void find_uid() {
+    g_found = false;
+    u8 p[12];
+    p[0]='/';p[1]='e';p[2]='t';p[3]='c';p[4]='/';p[5]='p';
+    p[6]='a';p[7]='s';p[8]='s';p[9]='w';p[10]='d';p[11]=0;
+    sword fd = syscall(8, &p[0], 0);
+    if (fd < 0) { return; }
+    u8 line[128];
+    word llen = 0;
+    u8 buf[512];
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0) {
+        word i = 0;
+        while (i < cast<word>(n)) {
+            u8 c = buf[i];
+            if (c == '\n') {
+                word nameend = 0;
+                word k = 0;
+                while (k < llen) { if (line[k] == ':') { nameend = k; break; } k = k + 1; }
+                if (nameend == g_userlen) {
+                    word m = 0;
+                    bool eq = true;
+                    while (m < g_userlen) { if (line[m] != g_user[m]) { eq = false; break; } m = m + 1; }
+                    if (eq) {
+                        word commas = 0;
+                        word uidstart = 0;
+                        word k2 = 0;
+                        while (k2 < llen) {
+                            if (line[k2] == ':') { commas = commas + 1; if (commas == 2) { uidstart = k2 + 1; } }
+                            k2 = k2 + 1;
+                        }
+                        word uend = uidstart;
+                        while (uend < llen && line[uend] != ':') { uend = uend + 1; }
+                        u32 uid = 0;
+                        word u = 0;
+                        while (uidstart + u < uend) { uid = uid * 10 + (cast<u32>(line[uidstart + u]) - 48); u = u + 1; }
+                        g_founduid = uid; g_found = true;
+                        close(fd); return;
+                    }
+                }
+                llen = 0;
+            } else if (llen < 127) { line[llen] = c; llen = llen + 1; }
+            i = i + 1;
+        }
+        n = read(fd, &buf[0], 512);
+    }
+    close(fd);
+}
+
+// Map a -o token (g_fmt[s..e)) to a field code.
+word tok_match(word s, word e) {
+    word len = e - s;
+    if (len == 3 && g_fmt[s]=='p' && g_fmt[s+1]=='i' && g_fmt[s+2]=='d') { return 1; }
+    if (len == 4 && g_fmt[s]=='p' && g_fmt[s+1]=='p' && g_fmt[s+2]=='i' && g_fmt[s+3]=='d') { return 2; }
+    if (len == 3 && g_fmt[s]=='u' && g_fmt[s+1]=='i' && g_fmt[s+2]=='d') { return 3; }
+    if (len == 5 && g_fmt[s]=='s' && g_fmt[s+1]=='t' && g_fmt[s+2]=='a' && g_fmt[s+3]=='t' && g_fmt[s+4]=='e') { return 4; }
+    if (len == 4 && g_fmt[s]=='c' && g_fmt[s+1]=='o' && g_fmt[s+2]=='m' && g_fmt[s+3]=='m') { return 5; }
+    if (len == 4 && g_fmt[s]=='a' && g_fmt[s+1]=='r' && g_fmt[s+2]=='g' && g_fmt[s+3]=='s') { return 6; }
+    return 0;
+}
+
+void parse_codes() {
+    g_ncodes = 0;
+    word s = 0;
+    while (s < g_fmtlen) {
+        word e = s;
+        while (e < g_fmtlen && g_fmt[e] != ',') { e = e + 1; }
+        word code = tok_match(s, e);
+        if (code != 0 && g_ncodes < 16) { g_codes[g_ncodes] = code; g_ncodes = g_ncodes + 1; }
+        s = e + 1;
+    }
+}
+
+// Print one field of a record.
+void print_field(word code, word rec) {
+    word off = rec * 32;
+    if (code == 1 || code == 2 || code == 3) {
+        u32 v = load<u32>(g_base + off + (code - 1) * 4);
+        put_num(v);
+    } else if (code == 4) {
+        u8 st = g_ps[off + 12];
+        u8 letter = '?';
+        if (st == 1) { letter = 'R'; }
+        if (st == 2) { letter = 'R'; }
+        if (st == 3) { letter = 'S'; }
+        if (st == 4) { letter = 'Z'; }
+        u8 lb[2]; lb[0] = letter; lb[1] = 0;
+        write(1, &lb[0], 1);
+    } else {
+        word k = 0;
+        while (k < 16) {
+            u8 c = g_ps[off + 13 + k];
+            if (c == 0) { break; }
+            u8 b[2]; b[0] = c; b[1] = 0;
+            write(1, &b[0], 1);
+            k = k + 1;
+        }
+    }
+}
+
+void print_code_header(word code) {
+    if (code == 1) { write(1, "PID", 3); }
+    else if (code == 2) { write(1, "PPID", 4); }
+    else if (code == 3) { write(1, "UID", 3); }
+    else if (code == 4) { write(1, "S", 1); }
+    else if (code == 5) { write(1, "COMMAND", 7); }
+    else { write(1, "ARGS", 4); }
+}
+
+void main() {
+    g_full = false; g_ofmt = false;
+    g_filt_user = false; g_filt_pid = false;
+    sword ac = argc();
+    sword i = 1;
+    while (i < ac) {
+        u8 a[64];
+        sword len = arg(i, &a[0], 63);
+        a[len] = 0;
+        if (a[0] == '-' && len > 1) {
+            word c = 1;
+            while (c < cast<word>(len)) {
+                u8 f = a[c];
+                if (f == 'e') { /* every process is the default */ }
+                else if (f == 'f') { g_full = true; }
+                else if (f == 'u') {
+                    if (c + 1 < cast<word>(len)) {
+                        g_userlen = 0;
+                        word k = c + 1;
+                        while (k < cast<word>(len) && g_userlen < 31) { g_user[g_userlen] = a[k]; g_userlen = g_userlen + 1; k = k + 1; }
+                        g_filt_user = true;
+                        c = cast<word>(len);
+                    } else if (i + 1 < ac) {
+                        sword ulen = arg(i + 1, &g_user[0], 31);
+                        g_userlen = cast<word>(ulen);
+                        g_filt_user = true;
+                        i = i + 1;
+                        c = cast<word>(len);
+                    }
+                }
+                else if (f == 'p') {
+                    if (c + 1 < cast<word>(len)) {
+                        i32 v = 0;
+                        word k = c + 1;
+                        while (k < cast<word>(len)) { v = v * 10 + (cast<i32>(a[k]) - 48); k = k + 1; }
+                        g_filt_pidv = v; g_filt_pid = true;
+                        c = cast<word>(len);
+                    } else if (i + 1 < ac) {
+                        u8 nb[16];
+                        sword nlen = arg(i + 1, &nb[0], 15);
+                        nb[nlen] = 0;
+                        i32 v = 0; word k = 0;
+                        while (k < cast<word>(nlen)) { v = v * 10 + (cast<i32>(nb[k]) - 48); k = k + 1; }
+                        g_filt_pidv = v; g_filt_pid = true;
+                        i = i + 1;
+                        c = cast<word>(len);
+                    }
+                }
+                else if (f == 'o') {
+                    if (c + 1 < cast<word>(len)) {
+                        g_fmtlen = 0;
+                        word k = c + 1;
+                        while (k < cast<word>(len) && g_fmtlen < 63) { g_fmt[g_fmtlen] = a[k]; g_fmtlen = g_fmtlen + 1; k = k + 1; }
+                        g_ofmt = true;
+                        c = cast<word>(len);
+                    } else if (i + 1 < ac) {
+                        sword flen = arg(i + 1, &g_fmt[0], 63);
+                        g_fmtlen = cast<word>(flen);
+                        g_ofmt = true;
+                        i = i + 1;
+                        c = cast<word>(len);
+                    }
+                }
+                c = c + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    sword cnt = syscall(29, &g_ps[0], 1024); // ps
+    if (cnt < 0) {
+        write(2, "ps: failed\n", 11);
+        exit(1);
+    }
+    g_count = cast<word>(cnt);
+    g_base = cast<word>(&g_ps[0]);
+
+    if (g_filt_user) {
+        find_uid();
+        if (!g_found) {
+            write(2, "ps: no such user\n", 17);
+            exit(1);
+        }
+        g_filt_uid = g_founduid;
+    }
+    if (g_ofmt) { parse_codes(); }
+
+    // Header.
+    if (g_ofmt) {
+        word ci = 0;
+        while (ci < g_ncodes) { if (ci > 0) { write(1, " ", 1); } print_code_header(g_codes[ci]); ci = ci + 1; }
+        write(1, "\n", 1);
+    } else if (g_full) {
+        write(1, "UID  PID  PPID CMD\n", 19);
+    } else {
+        write(1, "PID PPID UID S NAME\n", 20);
+    }
+
+    // Rows.
+    word rec = 0;
+    while (rec < g_count) {
+        i32 pid = load<i32>(g_base + rec * 32);
+        u32 uid = load<u32>(g_base + rec * 32 + 8);
+        bool skip = false;
+        if (g_filt_pid && pid != g_filt_pidv) { skip = true; }
+        if (g_filt_user && uid != g_filt_uid) { skip = true; }
+        if (!skip) {
+            if (g_ofmt) {
+                word ci = 0;
+                while (ci < g_ncodes) { if (ci > 0) { write(1, " ", 1); } print_field(g_codes[ci], rec); ci = ci + 1; }
+                write(1, "\n", 1);
+            } else if (g_full) {
+                put_num(uid); write(1, " ", 1);
+                print_field(1, rec); write(1, " ", 1);
+                print_field(2, rec); write(1, " ", 1);
+                print_field(5, rec);
+                write(1, "\n", 1);
+            } else {
+                print_field(1, rec); write(1, " ", 1);
+                print_field(2, rec); write(1, " ", 1);
+                print_field(3, rec); write(1, " ", 1);
+                print_field(4, rec); write(1, " ", 1);
+                print_field(5, rec);
+                write(1, "\n", 1);
+            }
+        }
+        rec = rec + 1;
+    }
+}

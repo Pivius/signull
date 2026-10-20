@@ -1,0 +1,31 @@
+// kill — terminate a process by pid.
+//   -l       list signal names (only termination is implemented)
+//   <pid>    terminate that process
+
+void main() {
+    sword ac = argc();
+    if (ac < 2) {
+        puts("usage: kill [-l] <pid>\n");
+        exit(1);
+    }
+    u8 a[8];
+    sword len = arg(1, &a[0], 7);
+    a[len] = 0;
+    if (len == 2 && a[0] == '-' && a[1] == 'l') {
+        // The kernel only implements termination; list the conventional
+        // signal names that map to it, plus a note.
+        puts("1) SIGHUP  2) SIGINT  3) SIGQUIT  9) SIGKILL 15) SIGTERM\n");
+        puts("only termination (KILL/TERM) is implemented\n");
+        return;
+    }
+    sword pid = 0;
+    word k = 0;
+    while (k < cast<word>(len)) {
+        pid = pid * 10 + (cast<sword>(a[k]) - 48);
+        k = k + 1;
+    }
+    if (syscall(30, pid) < 0) { // kill
+        write(2, "kill: no such process\n", 22);
+        exit(1);
+    }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytecode = { path = "../bytecode" }
+netstack = { path = "../netstack" }
+
+[dev-dependencies]
+lang = { path = "../lang" }

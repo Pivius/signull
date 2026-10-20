@@ -1,0 +1,16 @@
+// touch — create an empty file.
+void main() {
+    if (argc() < 2) {
+        puts("usage: touch <file>\n");
+        exit(1);
+    }
+    u8 path[128];
+    sword len = arg(1, &path[0], 127);
+    path[len] = 0;
+    sword fd = syscall(8, &path[0], 258); // open(O_CREAT|O_RDWR)
+    if (fd < 0) {
+        write(2, "touch: cannot create file\n", 27);
+        exit(1);
+    }
+    close(fd);
+}

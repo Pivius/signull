@@ -1,0 +1,55 @@
+// uname — print system information.
+//   -a  all (sysname nodename release version machine)
+//   -s  kernel name   -n  node name   -r  release   -v  version   -m  machine
+// Utsname (320 bytes): 5 fields of 64 bytes.
+
+u8 g_uts[320];
+
+// Print field f (0..4) from the utsname buffer.
+void put_field(word f) {
+    word k = 0;
+    word base = f * 64;
+    while (k < 64) {
+        u8 c = g_uts[base + k];
+        if (c == 0) { break; }
+        u8 b[2]; b[0] = c; b[1] = 0;
+        write(1, &b[0], 1);
+        k = k + 1;
+    }
+}
+
+void main() {
+    if (syscall(27, &g_uts[0]) < 0) { // uname
+        write(2, "uname: failed\n", 14);
+        exit(1);
+    }
+    sword ac = argc();
+    bool f_s = false; bool f_n = false; bool f_r = false;
+    bool f_v = false; bool f_m = false;
+    sword i = 1;
+    while (i < ac) {
+        u8 a[4];
+        sword len = arg(i, &a[0], 3);
+        a[len] = 0;
+        if (len == 2 && a[0] == '-') {
+            u8 f = a[1];
+            if (f == 'a') { f_s = true; f_n = true; f_r = true; f_v = true; f_m = true; }
+            else if (f == 's') { f_s = true; }
+            else if (f == 'n') { f_n = true; }
+            else if (f == 'r') { f_r = true; }
+            else if (f == 'v') { f_v = true; }
+            else if (f == 'm') { f_m = true; }
+        }
+        i = i + 1;
+    }
+    bool none = !f_s && !f_n && !f_r && !f_v && !f_m;
+    if (none) { f_s = true; f_n = true; f_r = true; f_v = true; f_m = true; }
+
+    bool first = true;
+    if (f_s) { put_field(0); first = false; }
+    if (f_n) { if (!first) { write(1, " ", 1); } put_field(1); first = false; }
+    if (f_r) { if (!first) { write(1, " ", 1); } put_field(2); first = false; }
+    if (f_v) { if (!first) { write(1, " ", 1); } put_field(3); first = false; }
+    if (f_m) { if (!first) { write(1, " ", 1); } put_field(4); }
+    write(1, "\n", 1);
+}

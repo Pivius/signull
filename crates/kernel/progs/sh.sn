@@ -1,0 +1,222 @@
+// sh — a shell with `|` pipelines and a `cd` builtin.
+//   cmd args            run a command
+//   cmd1 | cmd2         pipe stdout of cmd1 into stdin of cmd2
+//   cd [dir]            change directory
+//   exit                leave the shell
+// The game owns the input line (editing, history, tab) and sends the finished
+// line here; sh just reads it and runs the command.
+
+u8 line[256];
+
+u8 tokbuf[512];
+word tok_off[32];
+u8 tok_pipe[32];
+sword ntok;
+word tbp;
+u8 path[64];
+word argv[8];
+word stage_begin[8];
+word stage_count;
+
+// Read one raw line from stdin (the game already edited it). Returns length,
+// or -1 on EOF.
+sword read_line() {
+    sword len = 0;
+    while (len < 255) {
+        u8 c[1];
+        if (read(0, &c[0], 1) <= 0) {
+            if (len == 0) { return -1; }
+            break;
+        }
+        if (c[0] == '\n') { break; }
+        line[len] = c[0];
+        len = len + 1;
+    }
+    line[len] = 0;
+    return len;
+}
+
+// Split the line into null-terminated tokens in tokbuf, marking `|` separators.
+void tokenize(sword nlen) {
+    ntok = 0;
+    tbp = 0;
+    sword i = 0;
+    while (i < nlen) {
+        while (i < nlen && line[i] == ' ') { i = i + 1; }
+        if (i >= nlen) { break; }
+        if (line[i] == '|') {
+            tok_pipe[ntok] = 1;
+            ntok = ntok + 1;
+            i = i + 1;
+            continue;
+        }
+        tok_off[ntok] = tbp;
+        tok_pipe[ntok] = 0;
+        while (i < nlen && line[i] != ' ' && line[i] != '|') {
+            tokbuf[tbp] = line[i];
+            tbp = tbp + 1;
+            i = i + 1;
+        }
+        tokbuf[tbp] = 0;
+        tbp = tbp + 1;
+        ntok = ntok + 1;
+    }
+}
+
+// Mark where each pipeline stage begins (token index).
+void find_stages() {
+    stage_count = 1;
+    stage_begin[0] = 0;
+    word i = 0;
+    while (i < cast<word>(ntok)) {
+        if (tok_pipe[i] != 0) {
+            stage_begin[stage_count] = i + 1;
+            stage_count = stage_count + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// Length of the null-terminated token at tokbuf offset `off`.
+word tok_len(word off) {
+    word n = 0;
+    while (tokbuf[off + n] != 0) {
+        n = n + 1;
+    }
+    return n;
+}
+
+// Build `/bin/<cmd>` for the token at tokbuf offset `off`.
+void build_path(word off) {
+    path[0] = '/';
+    path[1] = 'b';
+    path[2] = 'i';
+    path[3] = 'n';
+    path[4] = '/';
+    word pi = 5;
+    word ci = off;
+    while (tokbuf[ci] != 0 && pi < 63) {
+        path[pi] = tokbuf[ci];
+        pi = pi + 1;
+        ci = ci + 1;
+    }
+    path[pi] = 0;
+}
+
+// Exec one stage: tokens [begin, end). Does not return on success.
+void exec_stage(word begin, word end) {
+    word ai = 0;
+    word t = begin;
+    while (t < end) {
+        argv[ai] = cast<word>(&tokbuf[tok_off[t]]);
+        ai = ai + 1;
+        t = t + 1;
+    }
+    build_path(tok_off[begin]);
+    exec(&path[0], cast<sword>(ai), &argv[0]);
+    write(1, "sh: exec failed: ", 17);
+    write(1, &tokbuf[tok_off[begin]], cast<sword>(tok_len(tok_off[begin])));
+    write(1, "\n", 2);
+    exit(1);
+}
+
+void run_pipeline() {
+    find_stages();
+    sword prev_read = -1;
+    word s = 0;
+    while (s < stage_count) {
+        word begin = stage_begin[s];
+        word end;
+        if (s + 1 < stage_count) {
+            end = stage_begin[s + 1] - 1;
+        } else {
+            end = cast<word>(ntok);
+        }
+        if (end <= begin) {
+            s = s + 1;
+            continue;
+        }
+        sword pfd[2];
+        bool has_pipe = (s + 1 < stage_count);
+        if (has_pipe) {
+            pipe(&pfd[0]);
+        }
+        sword pid = fork();
+        if (pid == 0) {
+            if (prev_read >= 0) {
+                dup2(prev_read, 0);
+                close(prev_read);
+            }
+            if (has_pipe) {
+                close(pfd[0]);
+                dup2(pfd[1], 1);
+                close(pfd[1]);
+            }
+            exec_stage(begin, end);
+        }
+        if (prev_read >= 0) {
+            close(prev_read);
+        }
+        if (has_pipe) {
+            close(pfd[1]);
+            prev_read = pfd[0];
+        }
+        s = s + 1;
+    }
+    sword st = 0;
+    word i = 0;
+    while (i < stage_count) {
+        wait(&st);
+        i = i + 1;
+    }
+}
+
+bool is_exit_cmd() {
+    if (ntok == 0) { return false; }
+    word off = tok_off[0];
+    return tokbuf[off] == 'e'
+        && tokbuf[off + 1] == 'x'
+        && tokbuf[off + 2] == 'i'
+        && tokbuf[off + 3] == 't'
+        && tokbuf[off + 4] == 0;
+}
+
+// Handle the `cd [dir]` builtin in-process. Returns true if the line was cd.
+bool try_cd() {
+    if (ntok == 0) { return false; }
+    word off = tok_off[0];
+    if (!(tokbuf[off] == 'c' && tokbuf[off + 1] == 'd' && tokbuf[off + 2] == 0)) {
+        return false;
+    }
+    u8 dir[128];
+    if (ntok >= 2) {
+        word di = 0;
+        word ci = tok_off[1];
+        while (tokbuf[ci] != 0 && di < 127) {
+            dir[di] = tokbuf[ci];
+            di = di + 1;
+            ci = ci + 1;
+        }
+        dir[di] = 0;
+    } else {
+        dir[0] = '/';
+        dir[1] = 0;
+    }
+    if (chdir(&dir[0]) < 0) {
+        write(1, "cd: no such directory\n", 22);
+    }
+    return true;
+}
+
+void main() {
+    while (true) {
+        sword n = read_line();
+        if (n < 0) { break; }
+        tokenize(n);
+        if (ntok == 0) { continue; }
+        if (is_exit_cmd()) { break; }
+        if (try_cd()) { continue; }
+        run_pipeline();
+    }
+    exit(0);
+}

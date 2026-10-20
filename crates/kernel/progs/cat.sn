@@ -1,0 +1,30 @@
+// cat — concatenate files (or stdin) to stdout.
+
+void cat_fd(sword fd) {
+    u8 buf[512];
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0) {
+        write(1, &buf[0], n);
+        n = read(fd, &buf[0], 512);
+    }
+}
+
+void main() {
+    sword ac = argc();
+    if (ac < 2) {
+        cat_fd(0);
+        return;
+    }
+    u8 path[128];
+    for (sword i = 1; i < ac; i = i + 1) {
+        sword len = arg(i, &path[0], 127);
+        path[len] = 0;
+        sword fd = syscall(8, &path[0], 0); // open(O_RDONLY)
+        if (fd < 0) {
+            write(2, "cat: cannot open file\n", 23);
+        } else {
+            cat_fd(fd);
+            close(fd);
+        }
+    }
+}

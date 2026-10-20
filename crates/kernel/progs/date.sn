@@ -1,0 +1,97 @@
+// date — print the current date and time.
+//   -u       UTC (the only zone we have; accepted and ignored)
+//   +FORMAT  strftime subset: %Y %m %d %H %M %S %F %T %%
+// Tm (24 bytes): year month day hour min sec (u32 LE).
+// Note: the shell does no quoting, so a FORMAT with spaces must avoid them
+// (e.g. use %T rather than a literal space inside quotes).
+
+u32 g_year;
+u32 g_mon;
+u32 g_day;
+u32 g_hour;
+u32 g_min;
+u32 g_sec;
+u8 g_fmt[64];
+word g_fmtlen;
+
+void put_num(u32 n) {
+    u8 num[16];
+    word i = 0;
+    u32 v = n;
+    if (v == 0) { num[0] = '0'; i = 1; }
+    while (v > 0) { num[i] = cast<u8>(48 + v % 10); v = v / 10; i = i + 1; }
+    word j = i;
+    while (j > 0) { j = j - 1; write(1, &num[j], 1); }
+}
+
+void put2(u32 n) {
+    if (n < 10) { write(1, "0", 1); }
+    put_num(n);
+}
+
+void emit_field(u8 code) {
+    if (code == 'Y') { put_num(g_year); }
+    else if (code == 'm') { put2(g_mon); }
+    else if (code == 'd') { put2(g_day); }
+    else if (code == 'H') { put2(g_hour); }
+    else if (code == 'M') { put2(g_min); }
+    else if (code == 'S') { put2(g_sec); }
+    else if (code == 'F') { put_num(g_year); write(1, "-", 1); put2(g_mon); write(1, "-", 1); put2(g_day); }
+    else if (code == 'T') { put2(g_hour); write(1, ":", 1); put2(g_min); write(1, ":", 1); put2(g_sec); }
+    else if (code == '%') { write(1, "%", 1); }
+}
+
+void do_format() {
+    word i = 0;
+    while (i < g_fmtlen) {
+        u8 c = g_fmt[i];
+        if (c == '%' && i + 1 < g_fmtlen) {
+            emit_field(g_fmt[i + 1]);
+            i = i + 2;
+        } else {
+            u8 b[2]; b[0] = c; b[1] = 0;
+            write(1, &b[0], 1);
+            i = i + 1;
+        }
+    }
+}
+
+void main() {
+    u8 buf[24];
+    if (syscall(32, &buf[0]) < 0) { // date
+        write(2, "date: failed\n", 13);
+        exit(1);
+    }
+    word base = cast<word>(&buf[0]);
+    g_year = load<u32>(base);
+    g_mon = load<u32>(base + 4);
+    g_day = load<u32>(base + 8);
+    g_hour = load<u32>(base + 12);
+    g_min = load<u32>(base + 16);
+    g_sec = load<u32>(base + 20);
+
+    sword ac = argc();
+    bool hasfmt = false;
+    sword i = 1;
+    while (i < ac) {
+        u8 a[64];
+        sword len = arg(i, &a[0], 63);
+        a[len] = 0;
+        if (a[0] == '+') {
+            g_fmtlen = 0;
+            word k = 1;
+            while (k < cast<word>(len) && g_fmtlen < 63) { g_fmt[g_fmtlen] = a[k]; g_fmtlen = g_fmtlen + 1; k = k + 1; }
+            hasfmt = true;
+        }
+        i = i + 1;
+    }
+
+    if (hasfmt) {
+        do_format();
+        write(1, "\n", 1);
+    } else {
+        put_num(g_year); write(1, "-", 1); put2(g_mon); write(1, "-", 1); put2(g_day);
+        write(1, " ", 1); put2(g_hour); write(1, ":", 1); put2(g_min); write(1, ":", 1); put2(g_sec);
+        write(1, "\n", 1);
+    }
+}

@@ -1,0 +1,436 @@
+// nano — a modeless editor.
+//   nano <file>     open (or create) a file
+//   Arrows / hjkl   move; type to insert; Backspace deletes
+//   ^S save    ^X / ^Q quit
+
+u8 buf[32768];
+word flen;
+word cur;
+word view;
+bool dirty;
+sword fd_out;
+
+// Frame output is built in a buffer and written in one syscall, so a redraw
+// appears atomically instead of one character at a time.
+u8 frame[8192];
+word frame_len;
+
+void fput(u8 c) {
+    frame[frame_len] = c;
+    frame_len = frame_len + 1;
+}
+
+void flush() {
+    if (frame_len > 0) {
+        write(fd_out, &frame[0], cast<sword>(frame_len));
+    }
+    frame_len = 0;
+}
+
+void put(u8 c) {
+    fput(c);
+}
+
+void emit_num(word n) {
+    if (n == 0) { put('0'); return; }
+    u8 tmp[12];
+    word i = 0;
+    word v = n;
+    while (v > 0) {
+        tmp[i] = cast<u8>(48 + v % 10);
+        v = v / 10;
+        i = i + 1;
+    }
+    word j = i;
+    while (j > 0) {
+        j = j - 1;
+        put(tmp[j]);
+    }
+}
+
+void move_to(word r, word c) {
+    fput(27);
+    fput('[');
+    emit_num(r + 1);
+    fput(59); // ;
+    emit_num(c + 1);
+    fput(72); // H
+}
+
+void clear_all() {
+    fput(27); fput('['); fput('H');
+    fput(27); fput('['); fput('2'); fput('J');
+}
+
+void clear_line() {
+    fput(27); fput('['); fput('K');
+}
+
+// input
+
+word read_byte() {
+    u8 b[1];
+    sword n = read(0, &b[0], 1);
+    if (n <= 0) { return 0; }
+    return cast<word>(b[0]);
+}
+
+// Arrow keys: 1000=up 1001=down 1002=right 1003=left.
+word read_key() {
+    word c = read_byte();
+    if (c == 27) {
+        word c2 = read_byte();
+        if (c2 == '[') {
+            word c3 = read_byte();
+            if (c3 == 'A') { return 1000; }
+            if (c3 == 'B') { return 1001; }
+            if (c3 == 'C') { return 1002; }
+            if (c3 == 'D') { return 1003; }
+        }
+        return 27;
+    }
+    return c;
+}
+
+// cursor movement
+
+void ensure_visible() {
+    while (cur < view && view > 0) {
+        view = view - 1;
+    }
+    word pos = view;
+    word row = 0;
+    word col = 0;
+    while (pos < flen && pos < cur) {
+        if (buf[pos] == '\n' || col >= 110) {
+            row = row + 1;
+            col = 0;
+            if (buf[pos] == '\n') {
+                pos = pos + 1;
+                continue;
+            }
+        }
+        col = col + 1;
+        pos = pos + 1;
+    }
+    while (row >= 33) {
+        while (view < flen && buf[view] != '\n') {
+            view = view + 1;
+        }
+        if (view < flen) { view = view + 1; }
+        row = row - 1;
+    }
+}
+
+void move_left() {
+    if (cur > 0) { cur = cur - 1; }
+    ensure_visible();
+}
+
+void move_right() {
+    if (cur < flen) { cur = cur + 1; }
+    ensure_visible();
+}
+
+void move_up() {
+    word col = 0;
+    word p = cur;
+    while (p > 0 && buf[p - 1] != '\n') {
+        p = p - 1;
+        col = col + 1;
+    }
+    if (p == 0) { return; }
+    word prev_end = p - 1;
+    word prev_start = prev_end;
+    while (prev_start > 0 && buf[prev_start - 1] != '\n') {
+        prev_start = prev_start - 1;
+    }
+    word target = prev_start;
+    word prev_len = prev_end - prev_start;
+    word step = 0;
+    while (step < col && step < prev_len) {
+        target = target + 1;
+        step = step + 1;
+    }
+    cur = target;
+    ensure_visible();
+}
+
+void move_down() {
+    word col = 0;
+    word p = cur;
+    while (p > 0 && buf[p - 1] != '\n') {
+        p = p - 1;
+        col = col + 1;
+    }
+    word e = cur;
+    while (e < flen && buf[e] != '\n') {
+        e = e + 1;
+    }
+    if (e >= flen) { return; }
+    word ns = e + 1;
+    word ne = ns;
+    while (ne < flen && buf[ne] != '\n') {
+        ne = ne + 1;
+    }
+    word target = ns;
+    word next_len = ne - ns;
+    word step = 0;
+    while (step < col && step < next_len) {
+        target = target + 1;
+        step = step + 1;
+    }
+    cur = target;
+    ensure_visible();
+}
+
+// editing
+
+void insert_byte(u8 c) {
+    if (flen >= 32768) { return; }
+    word p = flen;
+    while (p > cur) {
+        buf[p] = buf[p - 1];
+        p = p - 1;
+    }
+    buf[cur] = c;
+    flen = flen + 1;
+    cur = cur + 1;
+    dirty = true;
+    ensure_visible();
+}
+
+void delete_before() {
+    if (cur == 0) { return; }
+    word p = cur - 1;
+    while (p < flen - 1) {
+        buf[p] = buf[p + 1];
+        p = p + 1;
+    }
+    flen = flen - 1;
+    cur = cur - 1;
+    dirty = true;
+    ensure_visible();
+}
+
+// display
+
+void draw_status() {
+    move_to(34, 0);
+    clear_line();
+    if (dirty) {
+        fput('*'); fput('*'); fput(' ');
+    } else {
+        fput(' '); fput(' '); fput(' ');
+    }
+    fput('n'); fput('a'); fput('n'); fput('o'); fput(' '); fput(' '); fput('L');
+    emit_num(cur + 1);
+    fput(' '); fput(' ');
+    fput('^'); fput('S'); fput(' '); fput('s'); fput('a'); fput('v'); fput('e');
+    fput(' '); fput(' ');
+    fput('^'); fput('X'); fput(' '); fput('q'); fput('u'); fput('i'); fput('t');
+}
+
+void draw() {
+    frame_len = 0;
+    clear_all();
+    word pos = view;
+    word row = 0;
+    word col = 0;
+    word cur_row = 0;
+    word cur_col = 0;
+    bool found = false;
+    while (pos < flen && row < 33) {
+        if (!found && pos == cur) {
+            cur_row = row;
+            cur_col = col;
+            found = true;
+        }
+        u8 c = buf[pos];
+        if (c == '\n') {
+            row = row + 1;
+            col = 0;
+            if (row < 33) {
+                move_to(row, 0);
+            }
+            pos = pos + 1;
+            continue;
+        }
+        if (col >= 110) {
+            row = row + 1;
+            col = 0;
+            if (row < 33) {
+                move_to(row, 0);
+            }
+        }
+        put(c);
+        col = col + 1;
+        pos = pos + 1;
+    }
+    if (!found) {
+        // Cursor sits at or past the end of the visible content.
+        cur_row = row;
+        cur_col = col;
+    }
+    draw_status();
+    move_to(cur_row, cur_col);
+    flush();
+}
+
+// Append the cursor-position escape to the frame (no reset/flush).
+void emit_cursor() {
+    word cpos = view;
+    word crow = 0;
+    word ccol = 0;
+    while (cpos < cur && crow < 33) {
+        if (buf[cpos] == '\n' || ccol >= 110) {
+            crow = crow + 1;
+            ccol = 0;
+            if (buf[cpos] == '\n') {
+                cpos = cpos + 1;
+                continue;
+            }
+        }
+        ccol = ccol + 1;
+        cpos = cpos + 1;
+    }
+    move_to(crow, ccol);
+}
+
+// Cursor-only move: one tiny write, no content repaint.
+void draw_cursor() {
+    frame_len = 0;
+    emit_cursor();
+    flush();
+}
+
+void show_status(word which) {
+    frame_len = 0;
+    move_to(34, 0);
+    clear_line();
+    if (which == 0) {
+        fput('['); fput(' '); fput('s'); fput('a'); fput('v'); fput('e'); fput('d');
+        fput(' '); fput(']');
+    } else if (which == 1) {
+        fput('['); fput(' '); fput('S'); fput('A'); fput('V'); fput('E'); fput(' ');
+        fput('F'); fput('A'); fput('I'); fput('L'); fput('E'); fput('D'); fput(' '); fput(']');
+    } else {
+        fput('['); fput(' '); fput('u'); fput('n'); fput('s'); fput('a'); fput('v');
+        fput('e'); fput('d'); fput(':'); fput(' '); fput('^'); fput('S'); fput(' ');
+        fput('s'); fput('a'); fput('v'); fput('e'); fput(','); fput(' '); fput('^');
+        fput('X'); fput(' '); fput('a'); fput('g'); fput('a'); fput('i'); fput('n');
+        fput(' '); fput('t'); fput('o'); fput(' '); fput('q'); fput('u'); fput('i');
+        fput('t'); fput(' '); fput(']');
+    }
+    flush();
+}
+
+// file I/O
+
+void load_file(*u8 path) {
+    sword fd = syscall(8, path, 0); // open O_RDONLY
+    if (fd < 0) {
+        flen = 0;
+        cur = 0;
+        view = 0;
+        return;
+    }
+    flen = 0;
+    sword n = read(fd, &buf[0], 32768);
+    if (n > 0) {
+        flen = cast<word>(n);
+    }
+    close(fd);
+    cur = 0;
+    view = 0;
+}
+
+bool save_file(*u8 path) {
+    sword fd = syscall(8, path, 769); // O_CREAT|O_WRONLY|O_TRUNC
+    if (fd < 0) {
+        return false;
+    }
+    word off = 0;
+    while (off < flen) {
+        word chunk = flen - off;
+        if (chunk > 512) { chunk = 512; }
+        sword wrote = write(fd, &buf[off], cast<sword>(chunk));
+        if (wrote <= 0) {
+            close(fd);
+            return false;
+        }
+        off = off + cast<word>(wrote);
+    }
+    close(fd);
+    dirty = false;
+    return true;
+}
+
+void main() {
+    fd_out = 1;
+    dirty = false;
+
+    u8 path[128];
+    path[0] = 0;
+    if (argc() > 1) {
+        sword len = arg(1, &path[0], 127);
+        path[len] = 0;
+    } else {
+        puts("usage: nano <file>\n");
+        exit(1);
+    }
+
+    load_file(&path[0]);
+    draw();
+
+    bool running = true;
+    while (running) {
+        word k = read_key();
+        if (k == 1000) { move_up(); draw_cursor(); }
+        else if (k == 1001) { move_down(); draw_cursor(); }
+        else if (k == 1002) { move_right(); draw_cursor(); }
+        else if (k == 1003) { move_left(); draw_cursor(); }
+        else if (k == 8 || k == 127) { delete_before(); draw(); }
+        else if (k == 19) {
+            if (save_file(&path[0])) {
+                show_status(0);
+            } else {
+                show_status(1);
+            }
+        }
+        else if (k == 24 || k == 17) {
+            if (dirty) {
+                show_status(2);
+                word k2 = read_key();
+                if (k2 == 24 || k2 == 17) {
+                    running = false;
+                } else {
+                    draw();
+                }
+            } else {
+                running = false;
+            }
+        }
+        else if (k >= 32 && k < 127) {
+            insert_byte(cast<u8>(k));
+            draw();
+        }
+        else if (k == '\n') {
+            insert_byte('\n');
+            draw();
+        }
+        else if (k == '\t') {
+            insert_byte(' ');
+            insert_byte(' ');
+            draw();
+        }
+        else if (k == 0) {
+            running = false;
+        }
+    }
+    // Clear the screen on exit so the shell prompt resumes cleanly.
+    frame_len = 0;
+    clear_all();
+    flush();
+    exit(0);
+}

@@ -1,0 +1,56 @@
+// grep — print lines of a file that contain a pattern.
+void main() {
+    if (argc() < 3) {
+        puts("usage: grep <pattern> <file>\n");
+        exit(1);
+    }
+    u8 pat[128];
+    u8 path[128];
+    sword len = arg(1, &pat[0], 127);
+    pat[len] = 0;
+    sword plen = len;
+    len = arg(2, &path[0], 127);
+    path[len] = 0;
+
+    sword fd = syscall(8, &path[0], 0); // open(O_RDONLY)
+    if (fd < 0) {
+        write(2, "grep: cannot open file\n", 23);
+        exit(1);
+    }
+
+    u8 line[256];
+    word llen = 0;
+    u8 buf[512];
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0) {
+        word i = 0;
+        while (i < cast<word>(n)) {
+            u8 c = buf[i];
+            if (c == '\n') {
+                line[llen] = 0;
+                // Check if the line contains the pattern.
+                bool found = false;
+                if (plen > 0 && llen >= cast<word>(plen)) {
+                    word s = 0;
+                    while (s + cast<word>(plen) <= llen && !found) {
+                        word k = 0;
+                        while (k < cast<word>(plen) && line[s + k] == pat[k]) { k = k + 1; }
+                        if (k == cast<word>(plen)) { found = true; }
+                        s = s + 1;
+                    }
+                }
+                if (found) {
+                    write(1, &line[0], cast<sword>(llen));
+                    write(1, "\n", 1);
+                }
+                llen = 0;
+            } else if (llen < 255) {
+                line[llen] = c;
+                llen = llen + 1;
+            }
+            i = i + 1;
+        }
+        n = read(fd, &buf[0], 512);
+    }
+    close(fd);
+}

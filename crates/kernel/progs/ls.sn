@@ -1,0 +1,84 @@
+// ls — list directory entries, marking directories with a trailing `/`.
+// Dirent on disk: u16 inum (LE) + 14-byte NUL-padded name = 16 bytes.
+
+void main() {
+    u8 dir[128];
+    if (argc() > 1) {
+        sword len = arg(1, &dir[0], 127);
+        dir[len] = 0;
+    } else {
+        dir[0] = '.';
+        dir[1] = 0;
+    }
+    sword fd = syscall(8, &dir[0], 0); // open(O_RDONLY)
+    if (fd < 0) {
+        write(2, "ls: cannot open directory\n", 27);
+        exit(1);
+    }
+    u8 buf[1024];
+    sword n = read(fd, &buf[0], 1024);
+    close(fd);
+    word base = cast<word>(&buf[0]);
+    word count = cast<word>(n) / 16;
+    word e = 0;
+    while (e < count) {
+        word off = e * 16;
+        u16 inum = load<u16>(base + off);
+        if (inum != 0) {
+            // Copy the name out of the dirent.
+            u8 namebuf[16];
+            word j = 0;
+            while (j < 14) {
+                u8 c = buf[off + 2 + j];
+                if (c == 0) { break; }
+                namebuf[j] = c;
+                j = j + 1;
+            }
+            namebuf[j] = 0;
+            // Skip "." and "..".
+            bool isdot = (j == 1 && namebuf[0] == '.') || (j == 2 && namebuf[0] == '.' && namebuf[1] == '.');
+            if (!isdot) {
+                // Build the child path to stat: dir + "/" + name (skip when dir is ".").
+                u8 spath[256];
+                word pi = 0;
+                if (!(dir[0] == '.' && dir[1] == 0)) {
+                    word d = 0;
+                    while (dir[d] != 0) {
+                        spath[pi] = dir[d];
+                        pi = pi + 1;
+                        d = d + 1;
+                    }
+                    spath[pi] = '/';
+                    pi = pi + 1;
+                }
+                word ni = 0;
+                while (namebuf[ni] != 0) {
+                    spath[pi] = namebuf[ni];
+                    pi = pi + 1;
+                    ni = ni + 1;
+                }
+                spath[pi] = 0;
+                // Stat the child; kind 2 == directory.
+                u8 st[8];
+                word isdir = 0;
+                if (syscall(14, &spath[0], &st[0]) == 0) {
+                    u32 kind = load<u32>(cast<word>(&st[0]));
+                    if (kind == 2) { isdir = 1; }
+                }
+                // Print the name, with a trailing slash for directories.
+                write(1, &namebuf[0], cast<sword>(j));
+                if (isdir != 0) {
+                    u8 slash[2];
+                    slash[0] = '/';
+                    slash[1] = 0;
+                    write(1, &slash[0], 1);
+                }
+                u8 nl[2];
+                nl[0] = '\n';
+                nl[1] = 0;
+                write(1, &nl[0], 1);
+            }
+        }
+        e = e + 1;
+    }
+}

@@ -1,0 +1,4 @@
+// clear — clear the screen.
+void main() {
+    write(1, "\x1b[H\x1b[2J", 8);
+}

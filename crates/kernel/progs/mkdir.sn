@@ -1,0 +1,15 @@
+// mkdir — create a directory.
+void main() {
+    if (argc() < 2) {
+        puts("usage: mkdir <dir>\n");
+        exit(1);
+    }
+    u8 path[128];
+    sword len = arg(1, &path[0], 127);
+    path[len] = 0;
+    sword r = syscall(13, &path[0]); // mkdir
+    if (r < 0) {
+        write(2, "mkdir: cannot create directory\n", 32);
+        exit(1);
+    }
+}

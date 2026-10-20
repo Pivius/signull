@@ -1,0 +1,21 @@
+// echo — print arguments to stdout.
+void main() {
+    sword ac = argc();
+    for (sword i = 1; i < ac; i = i + 1) {
+        u8 buf[128];
+        sword len = arg(i, &buf[0], 127);
+        if (len > 0) {
+            write(1, &buf[0], len);
+        }
+        if (i + 1 < ac) {
+            u8 sp[2];
+            sp[0] = ' ';
+            sp[1] = 0;
+            write(1, &sp[0], 1);
+        }
+    }
+    u8 nl[2];
+    nl[0] = '\n';
+    nl[1] = 0;
+    write(1, &nl[0], 1);
+}

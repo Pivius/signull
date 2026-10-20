@@ -1,0 +1,10 @@
+// dmesg — print the kernel ring buffer.
+void main() {
+    u8 buf[4096];
+    sword n = syscall(31, &buf[0], 4096); // dmesg
+    if (n < 0) {
+        write(2, "dmesg: failed\n", 14);
+        exit(1);
+    }
+    write(1, &buf[0], n);
+}

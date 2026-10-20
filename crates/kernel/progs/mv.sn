@@ -1,0 +1,39 @@
+// mv — move (rename) a file: copy then remove the source.
+void main() {
+    if (argc() < 3) {
+        puts("usage: mv <src> <dst>\n");
+        exit(1);
+    }
+    u8 src[128];
+    u8 dst[128];
+    sword len = arg(1, &src[0], 127);
+    src[len] = 0;
+    len = arg(2, &dst[0], 127);
+    dst[len] = 0;
+
+    sword in = syscall(8, &src[0], 0); // open(O_RDONLY)
+    if (in < 0) {
+        write(2, "mv: cannot open src\n", 20);
+        exit(1);
+    }
+    sword out = syscall(8, &dst[0], 769); // open(O_CREAT|O_WRONLY|O_TRUNC)
+    if (out < 0) {
+        write(2, "mv: cannot open dst\n", 20);
+        close(in);
+        exit(1);
+    }
+    u8 buf[512];
+    sword n = read(in, &buf[0], 512);
+    while (n > 0) {
+        sword w = 0;
+        while (w < n) {
+            sword k = write(out, &buf[w], n - w);
+            if (k <= 0) { break; }
+            w = w + k;
+        }
+        n = read(in, &buf[0], 512);
+    }
+    close(in);
+    close(out);
+    syscall(12, &src[0]); // unlink(src)
+}

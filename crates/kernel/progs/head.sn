@@ -1,0 +1,52 @@
+// head — print the first N lines of a file (default 10).
+void main() {
+    if (argc() < 2) {
+        puts("usage: head [-n N] <file>\n");
+        exit(1);
+    }
+    sword max = 10;
+    u8 path[128];
+    sword argi = 1;
+    // Optional -n N.
+    u8 flag[8];
+    sword flen = arg(argi, &flag[0], 7);
+    flag[flen] = 0;
+    if (flen == 2 && flag[0] == '-' && flag[1] == 'n') {
+        argi = argi + 1;
+        u8 num[16];
+        sword nlen = arg(argi, &num[0], 15);
+        num[nlen] = 0;
+        max = 0;
+        word k = 0;
+        while (k < cast<word>(nlen)) {
+            max = max * 10 + (cast<sword>(num[k]) - 48);
+            k = k + 1;
+        }
+        argi = argi + 1;
+    }
+    if (argi >= argc()) {
+        puts("usage: head [-n N] <file>\n");
+        exit(1);
+    }
+    sword len = arg(argi, &path[0], 127);
+    path[len] = 0;
+
+    sword fd = syscall(8, &path[0], 0); // open(O_RDONLY)
+    if (fd < 0) {
+        write(2, "head: cannot open file\n", 23);
+        exit(1);
+    }
+    u8 buf[512];
+    sword lines = 0;
+    sword n = read(fd, &buf[0], 512);
+    while (n > 0 && lines < max) {
+        word i = 0;
+        while (i < cast<word>(n) && lines < max) {
+            write(1, &buf[i], 1);
+            if (buf[i] == '\n') { lines = lines + 1; }
+            i = i + 1;
+        }
+        n = read(fd, &buf[0], 512);
+    }
+    close(fd);
+}

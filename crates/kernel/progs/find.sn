@@ -1,0 +1,84 @@
+// find — recursively list files under a directory matching a name.
+void put_str(*u8 s, word n) {
+    write(1, s, cast<sword>(n));
+}
+
+void find_in(*u8 dir, word dlen, *u8 pat) {
+    sword fd = syscall(8, dir, 0); // open(O_RDONLY)
+    if (fd < 0) { return; }
+    u8 buf[1024];
+    sword n = read(fd, &buf[0], 1024);
+    close(fd);
+    word base = cast<word>(&buf[0]);
+    word count = cast<word>(n) / 16;
+    word e = 0;
+    while (e < count) {
+        word off = e * 16;
+        u16 inum = load<u16>(base + off);
+        if (inum != 0) {
+            u8 namebuf[16];
+            word j = 0;
+            while (j < 14) {
+                u8 c = buf[off + 2 + j];
+                if (c == 0) { break; }
+                namebuf[j] = c;
+                j = j + 1;
+            }
+            namebuf[j] = 0;
+            bool isdot = (j == 1 && namebuf[0] == '.') || (j == 2 && namebuf[0] == '.' && namebuf[1] == '.');
+            if (!isdot) {
+                // Build child path.
+                u8 spath[256];
+                word pi = 0;
+                word d = 0;
+                while (d < dlen) {
+                    spath[pi] = load<u8>(cast<word>(dir) + d);
+                    pi = pi + 1;
+                    d = d + 1;
+                }
+                spath[pi] = '/';
+                pi = pi + 1;
+                word ni = 0;
+                while (namebuf[ni] != 0) {
+                    spath[pi] = namebuf[ni];
+                    pi = pi + 1;
+                    ni = ni + 1;
+                }
+                spath[pi] = 0;
+                // Print if the name matches the pattern.
+                bool match = false;
+                word k = 0;
+                while (k < j && load<u8>(cast<word>(pat) + k) != 0 && namebuf[k] == load<u8>(cast<word>(pat) + k)) { k = k + 1; }
+                if (load<u8>(cast<word>(pat) + k) == 0 && k == j) { match = true; }
+                if (match) {
+                    put_str(&spath[0], pi);
+                    write(1, "\n", 1);
+                }
+                // Recurse into directories.
+                u8 st[8];
+                if (syscall(14, &spath[0], &st[0]) == 0) {
+                    u32 kind = load<u32>(cast<word>(&st[0]));
+                    if (kind == 2) {
+                        find_in(&spath[0], pi, pat);
+                    }
+                }
+            }
+        }
+        e = e + 1;
+    }
+}
+
+void main() {
+    u8 dir[128];
+    u8 pat[128];
+    if (argc() < 3) {
+        puts("usage: find <dir> <name>\n");
+        exit(1);
+    }
+    sword len = arg(1, &dir[0], 127);
+    dir[len] = 0;
+    sword dlen = len;
+    len = arg(2, &pat[0], 127);
+    pat[len] = 0;
+    find_in(&dir[0], cast<word>(dlen), &pat[0]);
+}
